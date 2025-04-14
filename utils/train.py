@@ -1,5 +1,5 @@
 #from torch import nn, optim
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 import pickle
@@ -14,7 +14,7 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
 
     # Variables for early stopping
     best_loss = float('inf')
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=patience)
 
     model_directory = 'results/model_weights/'
     if not os.path.isdir(model_directory):
@@ -23,7 +23,8 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
     writer = SummaryWriter(comment=str('_' + experiment_ID))
     # Ensure the model is moved to the DEVICE
     model.to(DEVICE)
-
+    previous_lr = optimizer.param_groups[0]['lr']
+    print('First lr:', previous_lr)
     for epoch in range(num_epochs):
         model.train()
         roc_epoch = [0] * class_nr
@@ -32,7 +33,7 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
             local_labels = local_labels.float().to(DEVICE)
             lead_idx = lead_idx.float().to(DEVICE)
             # Run the forward pass
-            if 'ModelCinc' in model.__class__.__name__:
+            if 'ResnetAttention' in model.__class__.__name__:
                 local_batch = local_batch.unsqueeze(2).float().to(DEVICE)
                 outputs = model(local_batch, lead_idx).float()
             else:
@@ -60,7 +61,6 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
 
         train_roc_auc = [round(x / len(train_loader), 2) for x in roc_epoch]
         train_loss = round(temp_loss / len(train_loader), 4)
-        #writer.add_scalar("Loss/train", train_loss, epoch)
 
         # Validation
         roc_epoch_valid = [0] * class_nr
@@ -78,7 +78,6 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
                 else:
                     val_local_batch = val_local_batch.float().to(DEVICE)
                     val_outputs = model(val_local_batch).float()
-                #val_outputs = model(model_input)
                 val_loss = criterion(val_outputs, val_local_labels.float())
                 val_temp_loss += val_loss.cpu().detach().numpy()
                 val_temp_roc = []
@@ -109,8 +108,16 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
                        'val_rocauc': val_roc_auc,
                        'val_loss': val_loss})
 
+        rounded_loss = round(val_loss, 3)
+        scheduler.step(rounded_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Learning rate: {current_lr}")
+        if current_lr != previous_lr:
+            print(f"Learning rate decreased from {previous_lr} to {current_lr} !")
+            model.load_state_dict(best_model_wts)
+            trigger_times = 0
+        previous_lr = current_lr
 
-        scheduler.step(val_loss)
         if val_loss < best_loss:
             best_loss = val_loss
             best_model_wts = copy.deepcopy(model.state_dict())
@@ -119,7 +126,7 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
             trigger_times += 1
 
         # Early stopping
-        if trigger_times >= patience and optimizer.param_groups[0]['lr'] > 0.00001:
+        if optimizer.param_groups[0]['lr'] < 0.0001: #trigger_times >= patience and
             print('Early stopping at epoch {}'.format(epoch + 1))
             model.load_state_dict(best_model_wts)
             torch.save(model.state_dict(), model_directory + experiment_ID + '.pth')
@@ -143,9 +150,11 @@ def train_loop(model, train_loader, val_loader, num_epochs, patience, optimizer,
         handle.close()
 
 
-def test_loop(model, test_loader, DEVICE, class_nr): #, experiment_ID):
+def test_loop(model, test_loader, DEVICE, class_nr):
     TEST = []
-    test_roc = [] #[0]*class_nr
+    test_roc = []
+    p_roc_auc = []
+    pr_auc = []
     model.eval()
     labels = []
     outputs = []
@@ -154,7 +163,7 @@ def test_loop(model, test_loader, DEVICE, class_nr): #, experiment_ID):
         lead_idx = lead_idx.float().to(DEVICE)
         # Run the forward pass
         with torch.no_grad():
-            if 'ModelCinc' in model.__class__.__name__:
+            if 'ResnetAttention' in model.__class__.__name__:
                 test_local_batch = test_local_batch.unsqueeze(2).float().to(DEVICE)
                 test_outputs = model(test_local_batch, lead_idx).float()
             else:
@@ -162,7 +171,6 @@ def test_loop(model, test_loader, DEVICE, class_nr): #, experiment_ID):
                 test_outputs = model(test_local_batch).float()
 
         #with torch.no_grad():
-            #test_outputs = model(model_input)
             labels.append(test_local_labels.cpu().detach().numpy().tolist())
             outputs.append(test_outputs.cpu().detach().numpy().tolist())
         del test_local_batch, test_local_labels
@@ -173,15 +181,23 @@ def test_loop(model, test_loader, DEVICE, class_nr): #, experiment_ID):
     for i in range(class_nr):
         if len(np.unique(labels[:, i])) > 1:
             test_roc.append(roc_auc_score(labels[:, i], outputs[:, i]))
+            p_roc_auc = roc_auc_score(labels[:, i], outputs[:, i], max_fpr=0.2)
+            pr_auc = average_precision_score(labels[:, i], outputs[:, i])
         else:
             test_roc.append(1)
+            p_roc_auc.append(1)
+            pr_auc.append(1)
 
     TEST.append({'labels': labels,
                    'outputs': outputs,
-                   'test_roc': test_roc})
+                   'test_roc': test_roc,
+                   'p_roc_auc': p_roc_auc,
+                   'pr_auc': pr_auc})
 
     print("Results on test set:")
     print([round(x, 2) for x in test_roc])
+    print([round(x, 2) for x in p_roc_auc])
+    print([round(x, 2) for x in pr_auc])
 
 
 

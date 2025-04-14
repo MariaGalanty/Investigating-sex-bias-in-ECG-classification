@@ -42,9 +42,9 @@ class MyResidualBlock(nn.Module):
 
 
 
-class ModelCinc(nn.Module):
+class ResnetAttention(nn.Module):
     def __init__(self,nOUT):
-        super(ModelCinc,self).__init__()
+        super(ResnetAttention,self).__init__()
         self.conv = nn.Conv2d(in_channels=12,
                               out_channels=256,
                               kernel_size=(1,15),
@@ -90,6 +90,6 @@ if __name__ == '__main__':
     x = torch.rand(64, 12, 1, 4096)
     l = torch.ones(64, 12)
 
-    mdl = ModelCinc(2)
+    mdl = ResnetAttention(3)
     y = mdl(x, l)
     print('all good')

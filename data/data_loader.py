@@ -5,7 +5,20 @@ import pandas as pd
 import torch
 from scipy import signal
 from tqdm import tqdm
-from data.helpers import *
+
+
+def min_max_normalize(arr):
+    try:
+        min_val = np.min(arr)
+        max_val = np.max(arr)
+        return (arr - min_val) / (max_val - min_val)
+    except:
+        return arr
+
+def z_score_normalize(arr):
+    mu = np.nanmean(arr, axis=-1, keepdims=True)
+    std = np.nanstd(arr, axis=-1, keepdims=True)
+    return (arr - mu) / std
 
 def find_challenge_files(data_directory_list):
     header_files = list()
@@ -192,59 +205,23 @@ def get_nsamp(header):
 
 
 class dataset:
-    """
-    classes = ['164889003','164890007','733534002', '426627000', '6374002',
-               '713427006','270492004','713426002','39732003','445118002',
-               '164947007','251146004','111975006','698252002','426783006',
-               '284470004','10370003','427172004','164917005', '365413008',
-               '47665007','427393009','426177001','427084000','164934002',
-               '59931005']
-
-    SR: 426783006
-    ST: 427084000
-    SB: 426177001
-    AF: 164889003
-
-    acute myocardial infarction (AMI): 57054005
-    anterior myocardial infarction (AnMI): 54329005
-    myocardial infarction (MI): 164865005
-
-    atrial hypertrophy: 195126007
-    left atrial hypertrophy: 446813000
-    left atrial enlargement: 67741000119109
-    left ventricular hypertrophy: 164873001
-    right atrial hypertrophy: 446358003
-    right ventricular hypertrophy: 89792004
-    ventricular hypertrophy: 266249003
-    """
 
     classes = ['164889003', #AF
                '426783006', '426177001', '427084000', #SR
-               '57054005', '54329005', '164865005', #MI
-               '195126007', '446813000', '67741000119109', '164873001', '446358003', '89792004', '266249003'] #HYP
+               '57054005', '54329005', '164865005'] #MI
 
     diseases_names = {'164889003': 'atrial fibrillation',
-                      #'164890007': 'atrial flutter',
                       '426783006': 'sinus rhythm',
-                      #'10370003': 'pacing rhythm',
                       '426177001': 'sinus bradycardia',
                       '427084000': 'sinus tachycardia',
                       '57054005': 'acute myocardial infarction',
                       '54329005': 'anterior myocardial infarction',
-                      '164865005': 'myocardial infarction',
-                      '195126007': '(atrial) hypertrophy',
-                      '446813000': 'left atrial hypertrophy',
-                      '67741000119109': 'left atrial enlargement',
-                      '164873001': 'left ventricular hypertrophy',
-                      '446358003': 'right atrial hypertrophy',
-                      '89792004': 'right ventricular hypertrophy',
-                      '266249003': 'ventricular hypertrophy'}
+                      '164865005': 'myocardial infarction'}
     classes_to_skip = []
     normal_class = '426783006'
-    #equivalent_classes = [['426783006', '426177001', '427084000']]  # ['713427006', '59118001'],
 
 
-    def __init__(self, header_files, length, classes_to_skip=[], nr_leads=None, normalize=False, return_source=False, equivalent_cl='sinus_mi_hyp'):
+    def __init__(self, header_files, length, classes_to_skip=[], nr_leads=None, normalize=False, return_source=False, equivalent_cl='sinus_mi'):
         self.files = []
         self.sample = True
         self.num_leads = nr_leads
@@ -254,10 +231,9 @@ class dataset:
         self.return_source = return_source
         self.equivalent_cl = equivalent_cl
 
-        if self.equivalent_cl == 'sinus_mi_hyp':
+        if self.equivalent_cl == 'sinus_mi':
             self.equivalent_classes = [['426783006', '426177001', '427084000'],
-                                       ['164865005', '57054005', '54329005'],
-                                       ['195126007', '446813000', '67741000119109', '164873001', '446358003', '89792004', '266249003']]
+                                       ['164865005', '57054005', '54329005']]
         elif self.equivalent_cl == 'sinus':
             self.equivalent_classes = [['426783006', '426177001', '427084000']]
         elif self.equivalent_cl is None:
@@ -268,7 +244,6 @@ class dataset:
         for h in tqdm(header_files):
             tmp = dict()
             tmp['header'] = h
-            #print(h)
             tmp['record'] = h.replace('.hea', '.mat')
             hdr = load_header(h)
             tmp['nsamp'] = get_nsamp(hdr)
@@ -279,10 +254,8 @@ class dataset:
             tmp['fs'] = get_frequency(hdr)
             tmp['target'] = np.zeros((len(dataset.classes),))  # 26
             tmp['source'] = get_class_source(h)
-            #print(tmp['source'])
             tmp['dx'] = replace_equivalent_classes(tmp['dx'], self.equivalent_classes)
             for dx in tmp['dx']:
-                # in SNOMED code is in scored classes
                 if dx in dataset.classes:
                     idx = dataset.classes.index(dx)
                     tmp['target'][idx] = 1
@@ -303,12 +276,11 @@ class dataset:
 
     def __getitem__(self, item):
         fs = self.files.iloc[item]['fs']
-        if self.equivalent_cl == 'sinus_mi_hyp':
+        if self.equivalent_cl == 'sinus_mi':
             af_index = dataset.classes.index('164889003')
             sr_index = dataset.classes.index('426783006')
             mi_index = dataset.classes.index('164865005')
-            hyp_index = dataset.classes.index('195126007')
-            target = self.files.iloc[item]['target'][[af_index, sr_index, mi_index, hyp_index]]
+            target = self.files.iloc[item]['target'][[af_index, sr_index, mi_index]]
         elif self.equivalent_cl == 'sinus':
             af_index = dataset.classes.index('164889003')
             sr_index = dataset.classes.index('426783006')
@@ -394,7 +366,7 @@ def expand_leads(recording,input_leads):
         idx = twelve_leads.index(k)
         output[idx,:] = recording[i,:]
         output_leads[idx] = 1
-    return output,output_leads
+    return output, output_leads
 
 
 class lead_exctractor:
@@ -479,18 +451,16 @@ def classes_info(dataset):
         print('AF index:', af_index)
         print('SR index:', sr_index)
     else:
-        filtered_summary = summary_series[['atrial fibrillation', 'sinus rhythm', 'myocardial infarction', '(atrial) hypertrophy']]
+        filtered_summary = summary_series[['atrial fibrillation', 'sinus rhythm', 'myocardial infarction']]
         print('Total number of samples:', len(dataset))
         print(filtered_summary)
         af_index = dataset.classes.index('164889003')
         sr_index = dataset.classes.index('426783006')
         mi_index = dataset.classes.index('164865005')
-        hyp_index = dataset.classes.index('195126007')
 
         print('AF index:', af_index)
         print('SR index:', sr_index)
         print('Myocardial infarction index:', mi_index)
-        print('Hypertrophy index:', hyp_index)
 
 
 def collate(batch):
